@@ -1,0 +1,19 @@
+// Sarma comparisons are strict: same types compare, mixed `==` is false,
+// mixed `<` is an error. `&&` and `||` return operands.
+
+print(1 == 1)            // true
+print(1 == "1")          // false (different types never equal)
+print(1 != "2")          // true
+print("abc" == "abc")    // true
+print(2 < 10)            // true
+print(10 < 9)            // false
+print("10" < "9")        // true (two strings compare character by character)
+
+var ok = 2 > 1
+print(ok)                // true
+
+print(true && "hi")      // hi (&& returns the operand)
+print(false || "dflt")   // dflt (|| returns the operand)
+print(0 || 42)           // 42
+print(!"")               // true
+print(!0)                // true

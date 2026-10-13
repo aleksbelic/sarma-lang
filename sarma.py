@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Sarma programming language - interpreter (print, variables, strings, numbers).
+"""Sarma programming language - interpreter (print, variables, strings, numbers,
+strict comparisons).
 
 Usage:
     python3 sarma.py <file.sarma>
@@ -10,6 +11,7 @@ Syntax:
     name = "sarma"
     print("hi " + name)
     print(1 + 2 * 3)     # numbers: 7
+    print(1 == 1)        # true (strict equality: 1 == "1" is false)
     print("one"); print("two")   # ; is a statement terminator, same as newline
 
 Terminator rule (Go-style, as specified):
@@ -31,6 +33,8 @@ from enum import Enum, auto
 class TokenType(Enum):
     PRINT = auto()
     VAR = auto()
+    TRUE = auto()
+    FALSE = auto()
     IDENTIFIER = auto()
     STRING = auto()
     NUMBER = auto()
@@ -248,6 +252,10 @@ class Lexer:
             self.add(TokenType.PRINT, word, line, col)
         elif word == "var":
             self.add(TokenType.VAR, word, line, col)
+        elif word == "true":
+            self.add(TokenType.TRUE, word, line, col)
+        elif word == "false":
+            self.add(TokenType.FALSE, word, line, col)
         else:
             self.add(TokenType.IDENTIFIER, word, line, col)
         self.prev_can_end = True
@@ -302,6 +310,12 @@ class NumberLit:
 
 
 @dataclass
+class BoolLit:
+    value: bool
+    line: int
+
+
+@dataclass
 class VarRef:
     name: str
     line: int
@@ -328,6 +342,41 @@ class Neg:
     """Unary minus (numbers only)."""
     operand: object
     line: int
+
+
+@dataclass
+class Not:
+    """Logical NOT; result is always a boolean (JavaScript truthiness)."""
+    operand: object
+    line: int
+
+
+@dataclass
+class Eq:
+    """Flat '==' / '!=' chain, left-associative (strict: mixed families never equal)."""
+    parts: list
+    ops: list  # each "==" or "!=", len == len(parts) - 1
+    line: int
+
+
+@dataclass
+class Rel:
+    """Flat '<', '<=', '>', '>=' chain, left-associative (numbers or two strings)."""
+    parts: list
+    ops: list  # each "<", "<=", ">" or ">=", len == len(parts) - 1
+    line: int
+
+
+@dataclass
+class And:
+    """'&&' chain; value is the first falsy operand or the last one (short-circuits)."""
+    parts: list
+
+
+@dataclass
+class Or:
+    """'||' chain; value is the first truthy operand or the last one (short-circuits)."""
+    parts: list
 
 
 @dataclass
@@ -427,6 +476,56 @@ class Parser:
         return PrintStmt(expr=expr, line=kw.line)
 
     def parse_expr(self):
+        # Logical-or level (lowest precedence).
+        parts = [self.parse_and()]
+        while self.peek().type == TokenType.OP and self.peek().value == "||":
+            self.advance()
+            parts.append(self.parse_and())
+        if len(parts) == 1:
+            return parts[0]
+        return Or(parts=parts)
+
+    def parse_and(self):
+        # Logical-and level.
+        parts = [self.parse_equality()]
+        while self.peek().type == TokenType.OP and self.peek().value == "&&":
+            self.advance()
+            parts.append(self.parse_equality())
+        if len(parts) == 1:
+            return parts[0]
+        return And(parts=parts)
+
+    def parse_equality(self):
+        # '==' / '!=' level.
+        parts = [self.parse_relational()]
+        ops: list[str] = []
+        op_line = 0
+        while self.peek().type == TokenType.OP and self.peek().value in ("==", "!="):
+            tok = self.advance()
+            if not ops:
+                op_line = tok.line
+            ops.append(tok.value)
+            parts.append(self.parse_relational())
+        if not ops:
+            return parts[0]
+        return Eq(parts=parts, ops=ops, line=op_line)
+
+    def parse_relational(self):
+        # '<', '<=', '>', '>=' level.
+        parts = [self.parse_additive()]
+        ops: list[str] = []
+        op_line = 0
+        while self.peek().type == TokenType.OP and self.peek().value in ("<", "<=", ">", ">="):
+            tok = self.advance()
+            if not ops:
+                op_line = tok.line
+            ops.append(tok.value)
+            parts.append(self.parse_additive())
+        if not ops:
+            return parts[0]
+        return Rel(parts=parts, ops=ops, line=op_line)
+
+    def parse_additive(self):
         # Additive level: '+' and '-' (left-associative).
         parts = [self.parse_term()]
         ops: list[str] = []
@@ -471,12 +570,21 @@ class Parser:
         if tok.type == TokenType.NUMBER:
             self.advance()
             return make_number(tok)
+        if tok.type == TokenType.TRUE:
+            self.advance()
+            return BoolLit(value=True, line=tok.line)
+        if tok.type == TokenType.FALSE:
+            self.advance()
+            return BoolLit(value=False, line=tok.line)
         if tok.type == TokenType.IDENTIFIER:
             self.advance()
             return VarRef(name=tok.value, line=tok.line)
         if tok.type == TokenType.OP and tok.value == "-":
             self.advance()
             return Neg(operand=self.parse_primary(), line=tok.line)
+        if tok.type == TokenType.OP and tok.value == "!":
+            self.advance()
+            return Not(operand=self.parse_primary(), line=tok.line)
         if tok.type == TokenType.LPAREN:
             self.advance()
             self.nesting += 1
@@ -489,7 +597,7 @@ class Parser:
             self.nesting -= 1
             return expr
         raise SarmaError(
-            f"Expected string, number, variable, or '(' but got {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}"
+            f"Expected string, number, boolean, variable, or '(' but got {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}"
         )
 
 
@@ -503,18 +611,72 @@ def make_number(tok: Token) -> NumberLit:
 
 
 def display(value) -> str:
-    """How a runtime value prints: strings as-is, whole floats without decimals."""
+    """How a runtime value prints: booleans as true/false, strings as-is,
+    whole floats without decimals."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
 
 
+def truthy(value) -> bool:
+    """JavaScript truthiness: false, 0, and "" are falsy; everything else is truthy."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return value != ""
+
+
+def same_family(a, b) -> bool:
+    """Strict comparison families: numbers (int and float together), strings, booleans."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool)
+    if isinstance(a, str) or isinstance(b, str):
+        return isinstance(a, str) and isinstance(b, str)
+    return True  # two numbers
+
+
+def strict_eq(a, b) -> bool:
+    """Equality: same family compares by value, mixed families are never equal."""
+    if not same_family(a, b):
+        return False
+    return a == b
+
+
+def strict_rel(op: str, a, b, line: int) -> bool:
+    """Relational: two numbers compare numerically, two strings lexicographically;
+    anything else is a type error."""
+    if isinstance(a, str) and isinstance(b, str):
+        if op == "<":
+            return a < b
+        if op == "<=":
+            return a <= b
+        if op == ">":
+            return a > b
+        return a >= b
+    a_num = isinstance(a, (int, float)) and not isinstance(a, bool)
+    b_num = isinstance(b, (int, float)) and not isinstance(b, bool)
+    if a_num and b_num:
+        if op == "<":
+            return a < b
+        if op == "<=":
+            return a <= b
+        if op == ">":
+            return a > b
+        return a >= b
+    raise SarmaError(f"Operator '{op}' requires two numbers or two strings at line {line}")
+
+
 def eval_expr(node, env: dict):
-    """Evaluate to a runtime value: str, int, or float."""
+    """Evaluate to a runtime value: str, int, float, or bool."""
     try:
         if isinstance(node, StringLit):
             return node.value
         if isinstance(node, NumberLit):
+            return node.value
+        if isinstance(node, BoolLit):
             return node.value
         if isinstance(node, VarRef):
             if node.name not in env:
@@ -522,15 +684,21 @@ def eval_expr(node, env: dict):
             return env[node.name]
         if isinstance(node, Neg):
             value = eval_expr(node.operand, env)
+            if isinstance(value, bool):
+                raise SarmaError(f"Operator '-' does not accept booleans at line {node.line}")
             if isinstance(value, str):
                 raise SarmaError(f"Cannot negate a string at line {node.line}")
             return -value
+        if isinstance(node, Not):
+            return not truthy(eval_expr(node.operand, env))
         if isinstance(node, Add):
             values = [eval_expr(p, env) for p in node.parts]
             if all(isinstance(v, str) for v in values):
                 if any(op == "-" for op in node.ops):
                     raise SarmaError(f"Operator '-' requires numbers at line {node.line}")
                 return "".join(values)
+            if any(isinstance(v, bool) for v in values):
+                raise SarmaError(f"Operator '{node.ops[0]}' does not accept booleans at line {node.line}")
             if any(isinstance(v, str) for v in values):
                 raise SarmaError(f"Cannot mix strings and numbers with '+' at line {node.line}")
             result = values[0]
@@ -539,6 +707,8 @@ def eval_expr(node, env: dict):
             return result
         if isinstance(node, Mul):
             values = [eval_expr(p, env) for p in node.parts]
+            if any(isinstance(v, bool) for v in values):
+                raise SarmaError(f"Operator '{node.ops[0]}' does not accept booleans at line {node.line}")
             if any(isinstance(v, str) for v in values):
                 raise SarmaError(f"Operator '{node.ops[0]}' requires numbers at line {node.line}")
             result = values[0]
@@ -552,6 +722,33 @@ def eval_expr(node, env: dict):
                         result %= v
             except ZeroDivisionError:
                 raise SarmaError(f"Division by zero at line {node.line}")
+            return result
+        if isinstance(node, Eq):
+            result = strict_eq(eval_expr(node.parts[0], env), eval_expr(node.parts[1], env))
+            for op, part in zip(node.ops[1:], node.parts[2:]):
+                current = strict_eq(result, eval_expr(part, env))
+                result = current if op == "==" else not current
+            if node.ops[0] == "!=":
+                result = not result
+            return result
+        if isinstance(node, Rel):
+            result = strict_rel(node.ops[0], eval_expr(node.parts[0], env), eval_expr(node.parts[1], env), node.line)
+            for op, part in zip(node.ops[1:], node.parts[2:]):
+                result = strict_rel(op, result, eval_expr(part, env), node.line)
+            return result
+        if isinstance(node, And):
+            result = True
+            for p in node.parts:
+                result = eval_expr(p, env)
+                if not truthy(result):
+                    return result
+            return result
+        if isinstance(node, Or):
+            result = False
+            for p in node.parts:
+                result = eval_expr(p, env)
+                if truthy(result):
+                    return result
             return result
         raise SarmaError(f"Unknown expression {node!r}")
     except RecursionError:

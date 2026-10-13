@@ -1,4 +1,4 @@
-# Sarma Language Specification (v0.4)
+# Sarma Language Specification (v0.6)
 
 ## 1. Statements and expressions
 
@@ -10,13 +10,19 @@ statement    := print-stmt | var-stmt | assign-stmt
 print-stmt   := "print" "(" expr ")" terminator-or-eof
 var-stmt     := "var" identifier "=" expr terminator-or-eof
 assign-stmt  := identifier "=" expr terminator-or-eof
-expr         := term { ("+" | "-") term }
+expr         := or-expr
+or-expr      := and-expr { "||" and-expr }
+and-expr     := equality { "&&" equality }
+equality     := relational { ("==" | "!=") relational }
+relational   := additive { ("<" | "<=" | ">" | ">=") additive }
+additive     := term { ("+" | "-") term }
 term         := primary { ("*" | "/" | "%") primary }
-primary      := string | number | identifier | "-" primary | "(" expr ")"
+primary      := string | number | boolean | identifier
+              | "-" primary | "!" primary | "(" expr ")"
 ```
 
-- `print` and `var` are keywords.
-- `print(expr)` evaluates `expr` (must be a string) and writes it + newline to stdout.
+- `print`, `var`, `true`, and `false` are keywords.
+- `print(expr)` evaluates `expr` and writes it + newline to stdout.
   Output is written as each `print` runs, so output produced before a runtime error is kept
   and nothing after the error runs.
 - `var name = expr` declares a new variable; redeclaring with `var` is an error.
@@ -28,10 +34,22 @@ primary      := string | number | identifier | "-" primary | "(" expr ")"
   Division (or remainder) by zero is an error.
 - Types are strict: `+` needs two strings or two numbers (mixing is an error),
   `- * / %` and unary `-` need numbers. Variables hold whatever they were assigned.
+- Comparisons are strict (no type coercion):
+  - `==` / `!=`: same family compares by value — numbers numerically (`1 == 1.0`
+    → `true`), strings and booleans by identity. Mixed families are never equal:
+    `1 == "1"` → `false`, `true == 1` → `false`.
+  - `< <= > >=`: two numbers compare numerically, two strings character by character
+    (`"10" < "9"` → `true`). Anything else — mixed types or booleans — is an error.
+  - `!` gives a boolean: `false`, `0`, and `""` are falsy, everything else truthy.
+  - `&&` / `||` return an operand, not a boolean: `a && b` is the first falsy side
+    or `b`; `a || b` is the first truthy side or `b`. Both short-circuit
+    (`false && missing` is `false`, no error).
+  - Booleans print as `true` / `false` and are not numbers or strings:
+    arithmetic on them is an error.
 - `print` displays strings as-is, integers plainly, and whole floats without decimals
   (`3.0` prints as `3`, `3.5` as `3.5`).
 - Referencing an undefined variable is an error.
-- A line ending with `+` (or `=`) continues the statement on the next line (no terminator emitted).
+- A line ending with an operator (`+ - * / % = < > ! & |`, two-char operators included) continues the statement on the next line (no terminator emitted).
 - Strings: both `"..."` and `'...'` quotes; valid escapes are `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` — any other `\x` is an error (no silent backslash-drop, so `"C:\dir"` fails loudly). Strings cannot span lines, and a backslash immediately before a newline is an error too.
 - Parentheses inside an expression may nest at most 100 levels deep; deeper is an error.
 
@@ -45,6 +63,8 @@ print(name)           // sarma
 print("a" + "b")      // ab
 var n = 1 + 2 * 3
 print(n)              // 7
+print(1 == 1)         // true (strict: 1 == "1" is false)
+print(false || "dflt") // dflt (|| returns the operand)
 ```
 
 ## 2. Statement terminators / semicolon rules (Go-style)
@@ -114,7 +134,7 @@ Token-level summary:
 
 | Previous token ends with | Newline → |
 |---|---|
-| string, number, identifier, keyword (`print`, `var`), `)`, `]`, `}` | `TERMINATOR` |
+| string, number, identifier, keyword (`print`, `var`, `true`, `false`), `)`, `]`, `}` | `TERMINATOR` |
 | operator, `,`, `(`, `[`, `{`, start-of-file | no token |
 | inside brackets (depth > 0) | no token |
 | `;` anywhere | `TERMINATOR` |
