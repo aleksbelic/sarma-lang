@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sarma programming language - interpreter (print + variables + concat).
+"""Sarma programming language - interpreter (print, variables, strings, numbers).
 
 Usage:
     python3 sarma.py <file.sarma>
@@ -9,6 +9,7 @@ Syntax:
     var name = "world"
     name = "sarma"
     print("hi " + name)
+    print(1 + 2 * 3)     # numbers: 7
     print("one"); print("two")   # ; is a statement terminator, same as newline
 
 Terminator rule (Go-style, as specified):
@@ -295,14 +296,38 @@ class StringLit:
 
 
 @dataclass
+class NumberLit:
+    value: object  # int or float
+    line: int
+
+
+@dataclass
 class VarRef:
     name: str
     line: int
 
 
 @dataclass
-class Concat:
+class Add:
+    """Flat '+' / '-' chain (left-associative). Operands all strings (+) or all numbers."""
     parts: list
+    ops: list  # each "+" or "-", len == len(parts) - 1
+    line: int  # line of the first operator
+
+
+@dataclass
+class Mul:
+    """Flat '*', '/', '%' chain (left-associative, numbers only)."""
+    parts: list
+    ops: list  # each "*", "/" or "%", len == len(parts) - 1
+    line: int  # line of the first operator
+
+
+@dataclass
+class Neg:
+    """Unary minus (numbers only)."""
+    operand: object
+    line: int
 
 
 @dataclass
@@ -402,22 +427,56 @@ class Parser:
         return PrintStmt(expr=expr, line=kw.line)
 
     def parse_expr(self):
-        parts = [self.parse_primary()]
-        while self.peek().type == TokenType.PLUS:
+        # Additive level: '+' and '-' (left-associative).
+        parts = [self.parse_term()]
+        ops: list[str] = []
+        op_line = 0
+        while True:
+            tok = self.peek()
+            if tok.type == TokenType.PLUS:
+                op = "+"
+            elif tok.type == TokenType.OP and tok.value == "-":
+                op = "-"
+            else:
+                break
             self.advance()
-            parts.append(self.parse_primary())
-        if len(parts) == 1:
+            if not ops:
+                op_line = tok.line
+            ops.append(op)
+            parts.append(self.parse_term())
+        if not ops:
             return parts[0]
-        return Concat(parts=parts)
+        return Add(parts=parts, ops=ops, line=op_line)
+
+    def parse_term(self):
+        # Multiplicative level: '*', '/', '%' (left-associative, tighter than '+'/'-').
+        parts = [self.parse_primary()]
+        ops: list[str] = []
+        op_line = 0
+        while self.peek().type == TokenType.OP and self.peek().value in ("*", "/", "%"):
+            tok = self.advance()
+            if not ops:
+                op_line = tok.line
+            ops.append(tok.value)
+            parts.append(self.parse_primary())
+        if not ops:
+            return parts[0]
+        return Mul(parts=parts, ops=ops, line=op_line)
 
     def parse_primary(self):
         tok = self.peek()
         if tok.type == TokenType.STRING:
             self.advance()
             return StringLit(value=tok.value)
+        if tok.type == TokenType.NUMBER:
+            self.advance()
+            return make_number(tok)
         if tok.type == TokenType.IDENTIFIER:
             self.advance()
             return VarRef(name=tok.value, line=tok.line)
+        if tok.type == TokenType.OP and tok.value == "-":
+            self.advance()
+            return Neg(operand=self.parse_primary(), line=tok.line)
         if tok.type == TokenType.LPAREN:
             self.advance()
             self.nesting += 1
@@ -430,20 +489,70 @@ class Parser:
             self.nesting -= 1
             return expr
         raise SarmaError(
-            f"Expected string, variable, or '(' but got {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}"
+            f"Expected string, number, variable, or '(' but got {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}"
         )
 
 
-def eval_expr(node, env: dict) -> str:
+def make_number(tok: Token) -> NumberLit:
+    s = tok.value
+    try:
+        value = int(s) if "." not in s else float(s)
+    except ValueError:
+        raise SarmaError(f"Invalid number {s!r} at {tok.line}:{tok.col}")
+    return NumberLit(value=value, line=tok.line)
+
+
+def display(value) -> str:
+    """How a runtime value prints: strings as-is, whole floats without decimals."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def eval_expr(node, env: dict):
+    """Evaluate to a runtime value: str, int, or float."""
     try:
         if isinstance(node, StringLit):
+            return node.value
+        if isinstance(node, NumberLit):
             return node.value
         if isinstance(node, VarRef):
             if node.name not in env:
                 raise SarmaError(f"Undefined variable {node.name!r} at line {node.line}")
             return env[node.name]
-        if isinstance(node, Concat):
-            return "".join(eval_expr(p, env) for p in node.parts)
+        if isinstance(node, Neg):
+            value = eval_expr(node.operand, env)
+            if isinstance(value, str):
+                raise SarmaError(f"Cannot negate a string at line {node.line}")
+            return -value
+        if isinstance(node, Add):
+            values = [eval_expr(p, env) for p in node.parts]
+            if all(isinstance(v, str) for v in values):
+                if any(op == "-" for op in node.ops):
+                    raise SarmaError(f"Operator '-' requires numbers at line {node.line}")
+                return "".join(values)
+            if any(isinstance(v, str) for v in values):
+                raise SarmaError(f"Cannot mix strings and numbers with '+' at line {node.line}")
+            result = values[0]
+            for op, v in zip(node.ops, values[1:]):
+                result = result + v if op == "+" else result - v
+            return result
+        if isinstance(node, Mul):
+            values = [eval_expr(p, env) for p in node.parts]
+            if any(isinstance(v, str) for v in values):
+                raise SarmaError(f"Operator '{node.ops[0]}' requires numbers at line {node.line}")
+            result = values[0]
+            try:
+                for op, v in zip(node.ops, values[1:]):
+                    if op == "*":
+                        result *= v
+                    elif op == "/":
+                        result /= v
+                    else:
+                        result %= v
+            except ZeroDivisionError:
+                raise SarmaError(f"Division by zero at line {node.line}")
+            return result
         raise SarmaError(f"Unknown expression {node!r}")
     except RecursionError:
         raise SarmaError("expression too deeply nested")
@@ -454,7 +563,7 @@ def execute(stmts: list, out=print) -> None:
     env: dict = {}
     for s in stmts:
         if isinstance(s, PrintStmt):
-            out(eval_expr(s.expr, env))
+            out(display(eval_expr(s.expr, env)))
         elif isinstance(s, VarStmt):
             if s.name in env:
                 raise SarmaError(f"Variable {s.name!r} already defined (line {s.line})")

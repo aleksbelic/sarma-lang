@@ -12,7 +12,6 @@ or
 ./sarma ./examples/print.sarma
 ```
 
-
 ## Tests
 
 ```bash

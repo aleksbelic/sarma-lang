@@ -1,4 +1,4 @@
-# Sarma Language Specification (v0.3)
+# Sarma Language Specification (v0.4)
 
 ## 1. Statements and expressions
 
@@ -10,8 +10,9 @@ statement    := print-stmt | var-stmt | assign-stmt
 print-stmt   := "print" "(" expr ")" terminator-or-eof
 var-stmt     := "var" identifier "=" expr terminator-or-eof
 assign-stmt  := identifier "=" expr terminator-or-eof
-expr         := primary { "+" primary }
-primary      := string | identifier | "(" expr ")"
+expr         := term { ("+" | "-") term }
+term         := primary { ("*" | "/" | "%") primary }
+primary      := string | number | identifier | "-" primary | "(" expr ")"
 ```
 
 - `print` and `var` are keywords.
@@ -20,7 +21,15 @@ primary      := string | identifier | "(" expr ")"
   and nothing after the error runs.
 - `var name = expr` declares a new variable; redeclaring with `var` is an error.
 - `name = expr` reassigns; the variable must already exist (declare with `var` first).
-- `+` is left-associative string concatenation: `"a" + "b" + "c"` → `"abc"`.
+- `+` is left-associative: string concatenation (`"a" + "b"` → `"ab"`) or numeric addition.
+  `*`, `/`, `%` bind tighter than `+`, `-` (`1 + 2 * 3` → `7`); `-` before a primary is unary minus (`-5`).
+- Numbers: integer (`42`) or float (`0.5`) literals. `+ - *` on integers stay integers;
+  `/` always produces a float (`7 / 2` → `3.5`, `6 / 2` → `3.0`); `%` is remainder.
+  Division (or remainder) by zero is an error.
+- Types are strict: `+` needs two strings or two numbers (mixing is an error),
+  `- * / %` and unary `-` need numbers. Variables hold whatever they were assigned.
+- `print` displays strings as-is, integers plainly, and whole floats without decimals
+  (`3.0` prints as `3`, `3.5` as `3.5`).
 - Referencing an undefined variable is an error.
 - A line ending with `+` (or `=`) continues the statement on the next line (no terminator emitted).
 - Strings: both `"..."` and `'...'` quotes; valid escapes are `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` — any other `\x` is an error (no silent backslash-drop, so `"C:\dir"` fails loudly). Strings cannot span lines, and a backslash immediately before a newline is an error too.
@@ -34,6 +43,8 @@ print("hi " + name)   // hi world
 name = "sarma"
 print(name)           // sarma
 print("a" + "b")      // ab
+var n = 1 + 2 * 3
+print(n)              // 7
 ```
 
 ## 2. Statement terminators / semicolon rules (Go-style)
@@ -44,7 +55,7 @@ Sarma is newline-terminated with optional `;`. The lexer produces a single `TERM
 - Newline (`\n`) emits a `TERMINATOR` **only if** the previous token could end a statement:
   - `identifier`, string/number literal, `)`, `]`, `}`
 - Otherwise the newline is ignored (statement continues):
-  - line ends with operator (`+ - * / % = < > ! & | : .`), comma `,`, or opening bracket (`(`, `[`, `{`).
+  - line ends with an operator (single-char `+ - * / % = < > ! & | : .` or two-char `== != <= >= && || ->`), comma `,`, or opening bracket (`(`, `[`, `{`).
 - Newlines are suppressed inside `(...)` / `[...]` / `{...}` (nesting depth > 0), so multi-line calls work.
 - Brackets must be balanced and correctly paired. An unmatched closing bracket, a mismatched
   pair such as `(]`, and an opening bracket still unclosed at end of file are errors, reported
