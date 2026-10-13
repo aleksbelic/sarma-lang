@@ -1,0 +1,4 @@
+print("tab:\there")
+print('quote: \'x\' and \"y\"')
+print("back\\slash")
+print("two\nlines")

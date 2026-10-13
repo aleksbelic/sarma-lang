@@ -21,6 +21,7 @@ Terminator rule (Go-style, as specified):
     - `//` starts a line comment, `/* ... */` is a block comment.
 """
 
+import os
 import sys
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -61,6 +62,17 @@ class SarmaError(Exception):
     pass
 
 
+# Closing bracket for each opening bracket.
+CLOSING = {"(": ")", "[": "]", "{": "}"}
+# Supported string escapes; any other backslash sequence is an error.
+ESCAPES = {"n": "\n", "t": "\t", "r": "\r",
+           "\\": "\\", "'": "'", '"': '"', "0": "\0"}
+# Two-character operators are lexed as a single OP token.
+TWO_CHAR_OPS = ("==", "!=", "<=", ">=", "&&", "||", "->")
+# Maximum depth of nested parentheses inside an expression.
+MAX_NESTING = 100
+
+
 class Lexer:
     def __init__(self, source: str):
         self.src = source
@@ -71,7 +83,7 @@ class Lexer:
         self.tokens: list[Token] = []
         # Go-style: does previous token allow a statement end?
         self.prev_can_end = False
-        self.depth = 0  # (), [], {} nesting
+        self.brackets: list[tuple[str, int, int]] = []  # open (), [], {}: (char, line, col)
 
     def peek(self) -> str:
         return self.src[self.i] if self.i < self.n else ""
@@ -89,6 +101,18 @@ class Lexer:
     def add(self, type: TokenType, value: str, line: int, col: int):
         self.tokens.append(Token(type, value, line, col))
 
+    def close_bracket(self, ch: str):
+        line, col = self.line, self.col
+        if not self.brackets:
+            raise SarmaError(f"Unmatched {ch!r} at {line}:{col}")
+        open_ch, open_line, open_col = self.brackets[-1]
+        if CLOSING[open_ch] != ch:
+            raise SarmaError(
+                f"Mismatched {ch!r} at {line}:{col}: expected {CLOSING[open_ch]!r} "
+                f"to close {open_ch!r} opened at {open_line}:{open_col}"
+            )
+        self.brackets.pop()
+
     def lex(self) -> list[Token]:
         while self.i < self.n:
             ch = self.peek()
@@ -103,7 +127,7 @@ class Lexer:
                 #     "hi"
                 #   )
                 # works naturally.
-                if self.depth == 0 and self.prev_can_end:
+                if not self.brackets and self.prev_can_end:
                     self.add(TokenType.TERMINATOR, "\\n", line, col)
                     self.prev_can_end = False
                 continue
@@ -139,42 +163,49 @@ class Lexer:
                 continue
             if ch == "(":
                 self.add(TokenType.LPAREN, ch, self.line, self.col)
+                self.brackets.append((ch, self.line, self.col))
                 self.advance()
-                self.depth += 1
                 self.prev_can_end = False
                 continue
             if ch == ")":
+                self.close_bracket(ch)
                 self.add(TokenType.RPAREN, ch, self.line, self.col)
                 self.advance()
-                self.depth = max(0, self.depth - 1)
                 self.prev_can_end = True
                 continue
             if ch == "[":
                 self.add(TokenType.LBRACK, ch, self.line, self.col)
+                self.brackets.append((ch, self.line, self.col))
                 self.advance()
-                self.depth += 1
                 self.prev_can_end = False
                 continue
             if ch == "]":
+                self.close_bracket(ch)
                 self.add(TokenType.RBRACK, ch, self.line, self.col)
                 self.advance()
-                self.depth = max(0, self.depth - 1)
                 self.prev_can_end = True
                 continue
             if ch == "{":
                 self.add(TokenType.LBRACE, ch, self.line, self.col)
+                self.brackets.append((ch, self.line, self.col))
                 self.advance()
-                self.depth += 1
                 self.prev_can_end = False
                 continue
             if ch == "}":
+                self.close_bracket(ch)
                 self.add(TokenType.RBRACE, ch, self.line, self.col)
                 self.advance()
-                self.depth = max(0, self.depth - 1)
                 self.prev_can_end = True
                 continue
             if ch == ",":
                 self.add(TokenType.COMMA, ch, self.line, self.col)
+                self.advance()
+                self.prev_can_end = False
+                continue
+            two = self.src[self.i:self.i + 2]
+            if two in TWO_CHAR_OPS:
+                self.add(TokenType.OP, two, self.line, self.col)
+                self.advance()
                 self.advance()
                 self.prev_can_end = False
                 continue
@@ -184,13 +215,8 @@ class Lexer:
                 self.prev_can_end = False
                 continue
             if ch == "=":
-                if self.i + 1 < self.n and self.src[self.i + 1] == "=":
-                    self.add(TokenType.OP, "==", self.line, self.col)
-                    self.advance()
-                    self.advance()
-                else:
-                    self.add(TokenType.ASSIGN, ch, self.line, self.col)
-                    self.advance()
+                self.add(TokenType.ASSIGN, ch, self.line, self.col)
+                self.advance()
                 self.prev_can_end = False
                 continue
             if ch in "-*/%<>!&|:.":
@@ -205,6 +231,9 @@ class Lexer:
                 self.lex_number()
                 continue
             raise SarmaError(f"Unexpected character {ch!r} at {self.line}:{self.col}")
+        if self.brackets:
+            ch, line, col = self.brackets[-1]
+            raise SarmaError(f"Unclosed {ch!r} opened at {line}:{col}")
         self.tokens.append(Token(TokenType.EOF, "", self.line, self.col))
         return self.tokens
 
@@ -231,26 +260,22 @@ class Lexer:
         self.prev_can_end = True
 
     def lex_string(self):
+        line, col = self.line, self.col  # position of the opening quote
         quote = self.advance()  # consume opening quote
-        line, col = self.line, self.col
         buf: list[str] = []
         closed = False
         while self.i < self.n:
+            esc_line, esc_col = self.line, self.col
             ch = self.advance()
             if ch == "\\" and self.i < self.n:
-                esc_line, esc_col = self.line, self.col  # position of escaped char
                 esc = self.advance()
-                if esc == "\n":
-                    continue  # line continuation: skip both, value gets no newline
-                if esc == "\r":
-                    if self.i < self.n and self.peek() == "\n":
-                        self.advance()
-                    continue  # line continuation for \r / \r\n
-                mapping = {"n": "\n", "t": "\t", "r": "\r",
-                           "\\": "\\", "'": "'", '"': '"', "0": "\0"}
-                if esc not in mapping:
+                if esc in ("\n", "\r"):
+                    raise SarmaError(
+                        f"Strings cannot span lines (backslash at end of line at {esc_line}:{esc_col})"
+                    )
+                if esc not in ESCAPES:
                     raise SarmaError(f"Unknown escape sequence '\\{esc}' at {esc_line}:{esc_col}")
-                buf.append(mapping[esc])
+                buf.append(ESCAPES[esc])
                 continue
             if ch == quote:
                 closed = True
@@ -304,6 +329,7 @@ class Parser:
     def __init__(self, tokens: list[Token]):
         self.tokens = tokens
         self.i = 0
+        self.nesting = 0  # parenthesis depth inside the current expression
 
     def peek(self) -> Token:
         return self.tokens[self.i]
@@ -394,8 +420,14 @@ class Parser:
             return VarRef(name=tok.value, line=tok.line)
         if tok.type == TokenType.LPAREN:
             self.advance()
+            self.nesting += 1
+            if self.nesting > MAX_NESTING:
+                raise SarmaError(
+                    f"Expression nested too deeply (more than {MAX_NESTING} levels) at {tok.line}:{tok.col}"
+                )
             expr = self.parse_expr()
             self.expect(TokenType.RPAREN)
+            self.nesting -= 1
             return expr
         raise SarmaError(
             f"Expected string, variable, or '(' but got {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}"
@@ -418,6 +450,7 @@ def eval_expr(node, env: dict) -> str:
 
 
 def execute(stmts: list, out=print) -> None:
+    """Run statements, calling out(line) for each print as it happens."""
     env: dict = {}
     for s in stmts:
         if isinstance(s, PrintStmt):
@@ -443,6 +476,7 @@ def run_source(source: str) -> list:
 
 
 def run_and_capture(source: str) -> list[str]:
+    """Run a program and return its output lines (raises on error, losing them)."""
     lines: list[str] = []
     execute(run_source(source), out=lines.append)
     return lines
@@ -452,14 +486,23 @@ def run_file(path: str):
     try:
         with open(path, "r", encoding="utf-8") as f:
             source = f.read()
-    except (OSError, UnicodeDecodeError) as e:
-        print(f"sarma: cannot read file {path}: {e}", file=sys.stderr)
+    except OSError as e:
+        print(f"sarma: cannot read {path}: {e.strerror or e}", file=sys.stderr)
+        sys.exit(1)
+    except UnicodeDecodeError:
+        print(f"sarma: cannot read {path}: file is not valid UTF-8", file=sys.stderr)
         sys.exit(1)
     try:
-        stmts = run_source(source)
-        execute(stmts)
+        execute(run_source(source))
     except SarmaError as e:
         print(f"sarma: error in {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except RecursionError:
+        print(f"sarma: error in {path}: program is nested too deeply", file=sys.stderr)
+        sys.exit(1)
+    except BrokenPipeError:
+        # The reader went away (e.g. `sarma prog.sarma | head`): exit quietly.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         sys.exit(1)
 
 

@@ -1,0 +1,5 @@
+var a = "x"
+print(a)
+print("ok")
+var a = "y"
+print("never")

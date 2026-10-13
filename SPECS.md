@@ -1,4 +1,4 @@
-# Sarma Language Specification (v0.2)
+# Sarma Language Specification (v0.3)
 
 ## 1. Statements and expressions
 
@@ -16,12 +16,15 @@ primary      := string | identifier | "(" expr ")"
 
 - `print` and `var` are keywords.
 - `print(expr)` evaluates `expr` (must be a string) and writes it + newline to stdout.
+  Output is written as each `print` runs, so output produced before a runtime error is kept
+  and nothing after the error runs.
 - `var name = expr` declares a new variable; redeclaring with `var` is an error.
 - `name = expr` reassigns; the variable must already exist (declare with `var` first).
 - `+` is left-associative string concatenation: `"a" + "b" + "c"` → `"abc"`.
 - Referencing an undefined variable is an error.
 - A line ending with `+` (or `=`) continues the statement on the next line (no terminator emitted).
-- Strings: both `"..."` and `'...'` quotes; valid escapes are `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` — any other `\x` is an error (no silent backslash-drop, so `"C:\dir"` fails loudly). A raw newline inside a string is an error; backslash-newline is a line continuation (both characters skipped, value gets no newline).
+- Strings: both `"..."` and `'...'` quotes; valid escapes are `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` — any other `\x` is an error (no silent backslash-drop, so `"C:\dir"` fails loudly). Strings cannot span lines, and a backslash immediately before a newline is an error too.
+- Parentheses inside an expression may nest at most 100 levels deep; deeper is an error.
 
 Examples:
 
@@ -43,6 +46,11 @@ Sarma is newline-terminated with optional `;`. The lexer produces a single `TERM
 - Otherwise the newline is ignored (statement continues):
   - line ends with operator (`+ - * / % = < > ! & | : .`), comma `,`, or opening bracket (`(`, `[`, `{`).
 - Newlines are suppressed inside `(...)` / `[...]` / `{...}` (nesting depth > 0), so multi-line calls work.
+- Brackets must be balanced and correctly paired. An unmatched closing bracket, a mismatched
+  pair such as `(]`, and an opening bracket still unclosed at end of file are errors, reported
+  with the position of the offending (or unclosed) bracket.
+- The two-character operators `==`, `!=`, `<=`, `>=`, `&&`, `||` and `->` are each a single `OP`
+  token. A lone `=` is assignment.
 - Consecutive terminators collapse (blank lines and `;;` are allowed, skipped by parser).
 - Each statement must end with `TERMINATOR` or `EOF`. Two statements on the same line **must** be separated by `;`.
 
@@ -65,7 +73,9 @@ Invalid:
 
 ```sarma
 print("a") print("b")   // ERROR: missing TERMINATOR between statements
-print("a"               // ERROR: missing ")"
+print("a"               // ERROR: unclosed '(' (reported at its opening position)
+print("a"))             // ERROR: unmatched ')'
+print("a"]              // ERROR: mismatched ']' (expected ')')
 print('unterminated)    // ERROR: unterminated string
 print("C:\dir")         // ERROR: unknown escape sequence '\d'
 ```
@@ -98,11 +108,22 @@ Token-level summary:
 | inside brackets (depth > 0) | no token |
 | `;` anywhere | `TERMINATOR` |
 
-## 4. Runtime behavior and errors
+## 4. Errors and exit codes
 
-- Output streams: each `print` writes immediately. If a later statement fails, earlier output is kept — e.g. `print("before")` followed by `print(missing)` still shows `before` before the error.
-- Errors (all reported as `sarma: error in <file>: <message>`, exit 1 — never a raw traceback):
-  - undefined variable, variable redefinition, assignment without `var`;
-  - unterminated string or block comment, unknown escape sequence;
-  - `expression too deeply nested` for absurdly deep `((((...))))` nesting (long `+` chains are fine — no practical limit).
-- Unreadable files (missing file, bad encoding) report `sarma: cannot read file <path>: ...`, exit 1.
+Errors are reported on stderr and never as a Python traceback:
+
+```
+sarma: error in <path>: <message>        // lexer, parser or runtime error
+sarma: cannot read <path>: <reason>      // missing/unreadable file, or not valid UTF-8
+Usage: <program> <file.sarma>            // wrong number of arguments
+```
+
+Positions are `line:col`, 1-based. Lexing happens before parsing and parsing before execution,
+so a lexer error (e.g. an unclosed bracket anywhere in the file) is reported before any parse or
+runtime error, and a file with a lexer or parse error runs none of its statements.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | program ran to completion |
+| 1 | lexer, parser or runtime error; file could not be read; stdout closed early (e.g. piped into `head`), silently |
+| 2 | usage error |
