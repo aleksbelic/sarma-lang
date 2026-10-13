@@ -1,0 +1,20 @@
+// Sarma variables + string concatenation.
+
+var name = "world"
+print("hi " + name)
+
+var first = "foo"
+var second = "bar"
+print(first + second)
+print(first + " " + second + "!")
+
+// reassignment (no `var` the second time)
+name = "sarma"
+print("hi " + name)
+
+// concatenation continues past newline when line ends with `+`
+print("a" +
+  "b")
+
+var greeting = "hello, " + name
+print(greeting)

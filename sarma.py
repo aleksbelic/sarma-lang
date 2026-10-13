@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Sarma programming language - MVP interpreter (print only).
+"""Sarma programming language - interpreter (print + variables + concat).
 
 Usage:
     python3 sarma.py <file.sarma>
     python3 sarma.py examples/print.sarma
 
-Syntax (MVP):
-    print("Hello world")
-    print('Hello world')
+Syntax:
+    var name = "world"
+    name = "sarma"
+    print("hi " + name)
     print("one"); print("two")   # ; is a statement terminator, same as newline
 
 Terminator rule (Go-style, as specified):
@@ -27,9 +28,12 @@ from enum import Enum, auto
 
 class TokenType(Enum):
     PRINT = auto()
+    VAR = auto()
     IDENTIFIER = auto()
     STRING = auto()
     NUMBER = auto()
+    PLUS = auto()     # +
+    ASSIGN = auto()   # =
     LPAREN = auto()   # (
     RPAREN = auto()   # )
     LBRACK = auto()   # [
@@ -37,7 +41,7 @@ class TokenType(Enum):
     LBRACE = auto()   # {
     RBRACE = auto()   # }
     COMMA = auto()
-    OP = auto()       # + - * / etc. (for continuation logic / future use)
+    OP = auto()       # - * / etc. (for continuation logic / future use)
     TERMINATOR = auto()  # newline-inserted or `;`
     EOF = auto()
 
@@ -174,7 +178,22 @@ class Lexer:
                 self.advance()
                 self.prev_can_end = False
                 continue
-            if ch in "+-*/%=<>!&|:.":
+            if ch == "+":
+                self.add(TokenType.PLUS, ch, self.line, self.col)
+                self.advance()
+                self.prev_can_end = False
+                continue
+            if ch == "=":
+                if self.i + 1 < self.n and self.src[self.i + 1] == "=":
+                    self.add(TokenType.OP, "==", self.line, self.col)
+                    self.advance()
+                    self.advance()
+                else:
+                    self.add(TokenType.ASSIGN, ch, self.line, self.col)
+                    self.advance()
+                self.prev_can_end = False
+                continue
+            if ch in "-*/%<>!&|:.":
                 self.add(TokenType.OP, ch, self.line, self.col)
                 self.advance()
                 self.prev_can_end = False
@@ -197,6 +216,8 @@ class Lexer:
         word = self.src[start:self.i]
         if word == "print":
             self.add(TokenType.PRINT, word, line, col)
+        elif word == "var":
+            self.add(TokenType.VAR, word, line, col)
         else:
             self.add(TokenType.IDENTIFIER, word, line, col)
         self.prev_can_end = True
@@ -235,8 +256,39 @@ class Lexer:
 
 
 @dataclass
-class PrintNode:
+class StringLit:
     value: str
+
+
+@dataclass
+class VarRef:
+    name: str
+    line: int
+
+
+@dataclass
+class Concat:
+    left: object
+    right: object
+
+
+@dataclass
+class PrintStmt:
+    expr: object
+    line: int
+
+
+@dataclass
+class VarStmt:
+    name: str
+    expr: object
+    line: int
+
+
+@dataclass
+class AssignStmt:
+    name: str
+    expr: object
     line: int
 
 
@@ -261,8 +313,8 @@ class Parser:
             )
         return self.advance()
 
-    def parse(self) -> list[PrintNode]:
-        stmts: list[PrintNode] = []
+    def parse(self) -> list:
+        stmts: list = []
         while self.peek().type != TokenType.EOF:
             # skip blank / duplicate terminators
             while self.peek().type == TokenType.TERMINATOR:
@@ -282,26 +334,103 @@ class Parser:
                 )
         return stmts
 
-    def parse_statement(self) -> PrintNode:
+    def parse_statement(self):
         tok = self.peek()
         if tok.type == TokenType.PRINT:
             return self.parse_print()
+        if tok.type == TokenType.VAR:
+            return self.parse_var()
+        if tok.type == TokenType.IDENTIFIER:
+            return self.parse_assign()
         raise SarmaError(
             f"Unknown statement starting with {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}. "
-            f"MVP only supports print(\"...\")."
+            f"Expected print, var, or assignment."
         )
 
-    def parse_print(self) -> PrintNode:
+    def parse_var(self) -> VarStmt:
+        kw = self.expect(TokenType.VAR)
+        name = self.expect(TokenType.IDENTIFIER)
+        self.expect(TokenType.ASSIGN)
+        expr = self.parse_expr()
+        return VarStmt(name=name.value, expr=expr, line=kw.line)
+
+    def parse_assign(self) -> AssignStmt:
+        name = self.expect(TokenType.IDENTIFIER)
+        self.expect(TokenType.ASSIGN)
+        expr = self.parse_expr()
+        return AssignStmt(name=name.value, expr=expr, line=name.line)
+
+    def parse_print(self) -> PrintStmt:
         kw = self.expect(TokenType.PRINT)
         self.expect(TokenType.LPAREN)
-        s = self.expect(TokenType.STRING)
+        expr = self.parse_expr()
         self.expect(TokenType.RPAREN)
-        return PrintNode(value=s.value, line=kw.line)
+        return PrintStmt(expr=expr, line=kw.line)
+
+    def parse_expr(self):
+        left = self.parse_primary()
+        while self.peek().type == TokenType.PLUS:
+            self.advance()
+            right = self.parse_primary()
+            left = Concat(left=left, right=right)
+        return left
+
+    def parse_primary(self):
+        tok = self.peek()
+        if tok.type == TokenType.STRING:
+            self.advance()
+            return StringLit(value=tok.value)
+        if tok.type == TokenType.IDENTIFIER:
+            self.advance()
+            return VarRef(name=tok.value, line=tok.line)
+        if tok.type == TokenType.LPAREN:
+            self.advance()
+            expr = self.parse_expr()
+            self.expect(TokenType.RPAREN)
+            return expr
+        raise SarmaError(
+            f"Expected string, variable, or '(' but got {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}"
+        )
 
 
-def run_source(source: str) -> list[PrintNode]:
+def eval_expr(node, env: dict) -> str:
+    if isinstance(node, StringLit):
+        return node.value
+    if isinstance(node, VarRef):
+        if node.name not in env:
+            raise SarmaError(f"Undefined variable {node.name!r} at line {node.line}")
+        return env[node.name]
+    if isinstance(node, Concat):
+        return eval_expr(node.left, env) + eval_expr(node.right, env)
+    raise SarmaError(f"Unknown expression {node!r}")
+
+
+def execute(stmts: list) -> list[str]:
+    env: dict = {}
+    out: list[str] = []
+    for s in stmts:
+        if isinstance(s, PrintStmt):
+            out.append(eval_expr(s.expr, env))
+        elif isinstance(s, VarStmt):
+            if s.name in env:
+                raise SarmaError(f"Variable {s.name!r} already defined (line {s.line})")
+            env[s.name] = eval_expr(s.expr, env)
+        elif isinstance(s, AssignStmt):
+            if s.name not in env:
+                raise SarmaError(f"Undefined variable {s.name!r} at line {s.line} (declare with var first)")
+            env[s.name] = eval_expr(s.expr, env)
+        else:
+            raise SarmaError(f"Unknown statement {s!r}")
+    return out
+
+
+def run_source(source: str) -> list:
     tokens = Lexer(source).lex()
     return Parser(tokens).parse()
+
+
+def run_and_capture(source: str) -> list[str]:
+    return execute(run_source(source))
 
 
 def run_file(path: str):
@@ -309,11 +438,11 @@ def run_file(path: str):
         source = f.read()
     try:
         stmts = run_source(source)
+        for line in execute(stmts):
+            print(line)
     except SarmaError as e:
         print(f"sarma: error in {path}: {e}", file=sys.stderr)
         sys.exit(1)
-    for s in stmts:
-        print(s.value)
 
 
 def main(argv: list[str]):

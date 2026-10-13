@@ -1,28 +1,36 @@
-# Sarma Language Specification (MVP v0.1)
+# Sarma Language Specification (v0.2)
 
-## 1. Print statement
+## 1. Statements and expressions
 
 Grammar:
 
 ```
 program      := { statement } EOF
-statement    := print-stmt
-print-stmt   := "print" "(" string ")" terminator-or-eof
+statement    := print-stmt | var-stmt | assign-stmt
+print-stmt   := "print" "(" expr ")" terminator-or-eof
+var-stmt     := "var" identifier "=" expr terminator-or-eof
+assign-stmt  := identifier "=" expr terminator-or-eof
+expr         := primary { "+" primary }
+primary      := string | identifier | "(" expr ")"
 ```
 
-- `print` is a keyword.
-- Exactly one string argument is required (MVP).
-- Both quote styles are supported: `"..."` and `'...'`.
-- Escape sequences inside strings: `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0`. Unknown escapes resolve to the escaped char (e.g. `\x` → `x`).
-- Strings cannot span lines (unterminated newline = error).
-- `print` writes its argument + newline to stdout.
+- `print` and `var` are keywords.
+- `print(expr)` evaluates `expr` (must be a string) and writes it + newline to stdout.
+- `var name = expr` declares a new variable; redeclaring with `var` is an error.
+- `name = expr` reassigns; the variable must already exist (declare with `var` first).
+- `+` is left-associative string concatenation: `"a" + "b" + "c"` → `"abc"`.
+- Referencing an undefined variable is an error.
+- A line ending with `+` (or `=`) continues the statement on the next line (no terminator emitted).
+- Strings: both `"..."` and `'...'` quotes; escapes `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` (unknown escapes resolve to the escaped char); strings cannot span lines.
 
 Examples:
 
 ```sarma
-print("Hello world")
-print('Hello world')
-print("a\nb")  // prints two lines
+var name = "world"
+print("hi " + name)   // hi world
+name = "sarma"
+print(name)           // sarma
+print("a" + "b")      // ab
 ```
 
 ## 2. Statement terminators / semicolon rules (Go-style)
