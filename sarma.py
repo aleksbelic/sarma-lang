@@ -238,10 +238,19 @@ class Lexer:
         while self.i < self.n:
             ch = self.advance()
             if ch == "\\" and self.i < self.n:
+                esc_line, esc_col = self.line, self.col  # position of escaped char
                 esc = self.advance()
+                if esc == "\n":
+                    continue  # line continuation: skip both, value gets no newline
+                if esc == "\r":
+                    if self.i < self.n and self.peek() == "\n":
+                        self.advance()
+                    continue  # line continuation for \r / \r\n
                 mapping = {"n": "\n", "t": "\t", "r": "\r",
                            "\\": "\\", "'": "'", '"': '"', "0": "\0"}
-                buf.append(mapping.get(esc, esc))
+                if esc not in mapping:
+                    raise SarmaError(f"Unknown escape sequence '\\{esc}' at {esc_line}:{esc_col}")
+                buf.append(mapping[esc])
                 continue
             if ch == quote:
                 closed = True
@@ -268,8 +277,7 @@ class VarRef:
 
 @dataclass
 class Concat:
-    left: object
-    right: object
+    parts: list
 
 
 @dataclass
@@ -368,12 +376,13 @@ class Parser:
         return PrintStmt(expr=expr, line=kw.line)
 
     def parse_expr(self):
-        left = self.parse_primary()
+        parts = [self.parse_primary()]
         while self.peek().type == TokenType.PLUS:
             self.advance()
-            right = self.parse_primary()
-            left = Concat(left=left, right=right)
-        return left
+            parts.append(self.parse_primary())
+        if len(parts) == 1:
+            return parts[0]
+        return Concat(parts=parts)
 
     def parse_primary(self):
         tok = self.peek()
@@ -394,23 +403,25 @@ class Parser:
 
 
 def eval_expr(node, env: dict) -> str:
-    if isinstance(node, StringLit):
-        return node.value
-    if isinstance(node, VarRef):
-        if node.name not in env:
-            raise SarmaError(f"Undefined variable {node.name!r} at line {node.line}")
-        return env[node.name]
-    if isinstance(node, Concat):
-        return eval_expr(node.left, env) + eval_expr(node.right, env)
-    raise SarmaError(f"Unknown expression {node!r}")
+    try:
+        if isinstance(node, StringLit):
+            return node.value
+        if isinstance(node, VarRef):
+            if node.name not in env:
+                raise SarmaError(f"Undefined variable {node.name!r} at line {node.line}")
+            return env[node.name]
+        if isinstance(node, Concat):
+            return "".join(eval_expr(p, env) for p in node.parts)
+        raise SarmaError(f"Unknown expression {node!r}")
+    except RecursionError:
+        raise SarmaError("expression too deeply nested")
 
 
-def execute(stmts: list) -> list[str]:
+def execute(stmts: list, out=print) -> None:
     env: dict = {}
-    out: list[str] = []
     for s in stmts:
         if isinstance(s, PrintStmt):
-            out.append(eval_expr(s.expr, env))
+            out(eval_expr(s.expr, env))
         elif isinstance(s, VarStmt):
             if s.name in env:
                 raise SarmaError(f"Variable {s.name!r} already defined (line {s.line})")
@@ -421,25 +432,32 @@ def execute(stmts: list) -> list[str]:
             env[s.name] = eval_expr(s.expr, env)
         else:
             raise SarmaError(f"Unknown statement {s!r}")
-    return out
 
 
 def run_source(source: str) -> list:
-    tokens = Lexer(source).lex()
-    return Parser(tokens).parse()
+    try:
+        tokens = Lexer(source).lex()
+        return Parser(tokens).parse()
+    except RecursionError:
+        raise SarmaError("expression too deeply nested")
 
 
 def run_and_capture(source: str) -> list[str]:
-    return execute(run_source(source))
+    lines: list[str] = []
+    execute(run_source(source), out=lines.append)
+    return lines
 
 
 def run_file(path: str):
-    with open(path, "r", encoding="utf-8") as f:
-        source = f.read()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            source = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"sarma: cannot read file {path}: {e}", file=sys.stderr)
+        sys.exit(1)
     try:
         stmts = run_source(source)
-        for line in execute(stmts):
-            print(line)
+        execute(stmts)
     except SarmaError as e:
         print(f"sarma: error in {path}: {e}", file=sys.stderr)
         sys.exit(1)

@@ -14,3 +14,7 @@ print(                  // newline after `(` continues the statement
 )
 
 print("escape: a\nb")   // \n inside string prints two lines
+
+// backslash-newline continues a string on the next line (no newline in value)
+print("continuation: abc\
+def")   // prints "continuation: abcdef"

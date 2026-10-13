@@ -21,7 +21,7 @@ primary      := string | identifier | "(" expr ")"
 - `+` is left-associative string concatenation: `"a" + "b" + "c"` → `"abc"`.
 - Referencing an undefined variable is an error.
 - A line ending with `+` (or `=`) continues the statement on the next line (no terminator emitted).
-- Strings: both `"..."` and `'...'` quotes; escapes `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` (unknown escapes resolve to the escaped char); strings cannot span lines.
+- Strings: both `"..."` and `'...'` quotes; valid escapes are `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` — any other `\x` is an error (no silent backslash-drop, so `"C:\dir"` fails loudly). A raw newline inside a string is an error; backslash-newline is a line continuation (both characters skipped, value gets no newline).
 
 Examples:
 
@@ -67,6 +67,7 @@ Invalid:
 print("a") print("b")   // ERROR: missing TERMINATOR between statements
 print("a"               // ERROR: missing ")"
 print('unterminated)    // ERROR: unterminated string
+print("C:\dir")         // ERROR: unknown escape sequence '\d'
 ```
 
 ## 3. Comments
@@ -92,7 +93,16 @@ Token-level summary:
 
 | Previous token ends with | Newline → |
 |---|---|
-| string, number, identifier, `print`, `)`, `]`, `}` | `TERMINATOR` |
+| string, number, identifier, keyword (`print`, `var`), `)`, `]`, `}` | `TERMINATOR` |
 | operator, `,`, `(`, `[`, `{`, start-of-file | no token |
 | inside brackets (depth > 0) | no token |
 | `;` anywhere | `TERMINATOR` |
+
+## 4. Runtime behavior and errors
+
+- Output streams: each `print` writes immediately. If a later statement fails, earlier output is kept — e.g. `print("before")` followed by `print(missing)` still shows `before` before the error.
+- Errors (all reported as `sarma: error in <file>: <message>`, exit 1 — never a raw traceback):
+  - undefined variable, variable redefinition, assignment without `var`;
+  - unterminated string or block comment, unknown escape sequence;
+  - `expression too deeply nested` for absurdly deep `((((...))))` nesting (long `+` chains are fine — no practical limit).
+- Unreadable files (missing file, bad encoding) report `sarma: cannot read file <path>: ...`, exit 1.
