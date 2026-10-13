@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# `sarma` command wrapper — runs the Sarma interpreter.
+exec python3 "$(dirname "$0")/sarma.py" "$@"

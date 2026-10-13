@@ -1,0 +1,11 @@
+// line comment
+print("hello"); // trailing comment
+print('world')
+/* inline block */ print("inline")
+print(/* inside parens */ "parens")
+/* multi
+   line
+   block */
+print("done")
+print("/* not a comment */")
+print("// not a comment either")

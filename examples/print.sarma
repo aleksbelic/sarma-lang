@@ -1,0 +1,16 @@
+// Sarma print examples — every statement below is valid.
+// Newline ends a statement; `;` is optional except to separate
+// two statements on one line.
+
+print("Hello world");   // with semicolon
+print("Hello world")    // without semicolon — newline terminates
+print('Hello world');   // single quotes
+print('Hello world')    // single quotes, no semicolon
+
+print("a"); print("b")  // two statements on one line need `;`
+
+print(                  // newline after `(` continues the statement
+  "multiline"
+)
+
+print("escape: a\nb")   // \n inside string prints two lines
