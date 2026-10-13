@@ -3,6 +3,11 @@ print(1 == 1.0)
 print(1 == "1")
 print("abc" == 1)
 print("abc" == "abc")
+print("a" == "A")
+print("abc" < "ABC")
+var Name = "upper"
+var name = "lower"
+print(Name == name)
 print(2 < 10)
 print(1 < 1.5)
 print("10" < "9")

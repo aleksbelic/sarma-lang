@@ -1,4 +1,4 @@
-# Sarma Language Specification (v0.6)
+# Sarma Language Specification (v0.7)
 
 ## 1. Statements and expressions
 
@@ -6,10 +6,13 @@ Grammar:
 
 ```
 program      := { statement } EOF
-statement    := print-stmt | var-stmt | assign-stmt
+statement    := print-stmt | var-stmt | assign-stmt | if-stmt
 print-stmt   := "print" "(" expr ")" terminator-or-eof
 var-stmt     := "var" identifier "=" expr terminator-or-eof
 assign-stmt  := identifier "=" expr terminator-or-eof
+if-stmt      := "if" "(" expr ")" branch [ "else" (branch | if-stmt) ]
+branch       := block | statement
+block        := "{" { statement } "}"
 expr         := or-expr
 or-expr      := and-expr { "||" and-expr }
 and-expr     := equality { "&&" equality }
@@ -21,12 +24,24 @@ primary      := string | number | boolean | identifier
               | "-" primary | "!" primary | "(" expr ")"
 ```
 
-- `print`, `var`, `true`, and `false` are keywords.
+- `print`, `var`, `if`, `else`, `true`, and `false` are keywords.
+- Sarma is case-sensitive: keywords must be lowercase (`PRINT` is not `print`),
+  `Name` and `name` are different variables, and string comparison is code-point
+  exact (`"a" == "A"` is false).
 - `print(expr)` evaluates `expr` and writes it + newline to stdout.
   Output is written as each `print` runs, so output produced before a runtime error is kept
   and nothing after the error runs.
+- `if (cond) { ... }` runs the block when `cond` is truthy (`false`, `0`, and `""`
+  are falsy); `else` is optional, and `else if (...) { ... }` chains work.
+  A branch is a braced block or a single bare statement: `if (ok) print("yes")`
+  needs no braces. A bare nested `if` grabs a following `else` (dangling `else`
+  binds to the nearest `if`).
 - `var name = expr` declares a new variable; redeclaring with `var` is an error.
 - `name = expr` reassigns; the variable must already exist (declare with `var` first).
+- Blocks share the surrounding scope: a `var` declared inside a block is visible after it.
+- Newlines may surround the braces (`else` may start on the line after `}`), and a
+  closing `}` ends a statement, so `if (x) { print("y") }` needs no `;`.
+   An `if` statement itself still ends like any other statement (newline, `;`, or EOF).
 - `+` is left-associative: string concatenation (`"a" + "b"` → `"ab"`) or numeric addition.
   `*`, `/`, `%` bind tighter than `+`, `-` (`1 + 2 * 3` → `7`); `-` before a primary is unary minus (`-5`).
 - Numbers: integer (`42`) or float (`0.5`) literals. `+ - *` on integers stay integers;
@@ -65,6 +80,11 @@ var n = 1 + 2 * 3
 print(n)              // 7
 print(1 == 1)         // true (strict: 1 == "1" is false)
 print(false || "dflt") // dflt (|| returns the operand)
+if (n > 5) {
+  print("big")
+} else {
+  print("small")
+}                   // small
 ```
 
 ## 2. Statement terminators / semicolon rules (Go-style)
@@ -76,14 +96,18 @@ Sarma is newline-terminated with optional `;`. The lexer produces a single `TERM
   - `identifier`, string/number literal, `)`, `]`, `}`
 - Otherwise the newline is ignored (statement continues):
   - line ends with an operator (single-char `+ - * / % = < > ! & | : .` or two-char `== != <= >= && || ->`), comma `,`, or opening bracket (`(`, `[`, `{`).
-- Newlines are suppressed inside `(...)` / `[...]` / `{...}` (nesting depth > 0), so multi-line calls work.
+- Newlines are suppressed inside `(...)` and `[...]` (nesting depth > 0), so multi-line
+  calls work. Inside `{...}` blocks newlines DO terminate — blocks hold statements.
+  (An `if` condition split across lines still works: the line ends with an operator or
+  an opening bracket.)
 - Brackets must be balanced and correctly paired. An unmatched closing bracket, a mismatched
   pair such as `(]`, and an opening bracket still unclosed at end of file are errors, reported
   with the position of the offending (or unclosed) bracket.
 - The two-character operators `==`, `!=`, `<=`, `>=`, `&&`, `||` and `->` are each a single `OP`
   token. A lone `=` is assignment.
 - Consecutive terminators collapse (blank lines and `;;` are allowed, skipped by parser).
-- Each statement must end with `TERMINATOR` or `EOF`. Two statements on the same line **must** be separated by `;`.
+- Each statement must end with `TERMINATOR`, `}`, or `EOF`. Two statements on the same line
+  **must** be separated by `;` (a `}` counts as an ending, so `{ print("x") }` needs none).
 
 Valid:
 
@@ -134,9 +158,9 @@ Token-level summary:
 
 | Previous token ends with | Newline → |
 |---|---|
-| string, number, identifier, keyword (`print`, `var`, `true`, `false`), `)`, `]`, `}` | `TERMINATOR` |
+| string, number, identifier, keyword (`print`, `var`, `if`, `else`, `true`, `false`), `)`, `]`, `}` | `TERMINATOR` |
 | operator, `,`, `(`, `[`, `{`, start-of-file | no token |
-| inside brackets (depth > 0) | no token |
+| inside `(...)` / `[...]` (depth > 0) | no token |
 | `;` anywhere | `TERMINATOR` |
 
 ## 4. Errors and exit codes

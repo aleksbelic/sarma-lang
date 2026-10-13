@@ -1,0 +1,26 @@
+var n = 2
+if (n == 1) {
+  print("one")
+} else if (n == 2) {
+  print("two")
+} else {
+  print("other")
+}
+if (false) {
+  print("no")
+}
+print("after")
+if (0) {
+  print("zero")
+} else {
+  print("falsy")
+}
+if (true) {
+  if (true) {
+    print("nested")
+  }
+}
+if (true) { print("one-liner") }
+if (true) print("bare")
+if (false) print("no") else print("bare-else")
+if (true) if (false) print("inner") else print("dangle")

@@ -12,6 +12,9 @@ Syntax:
     print("hi " + name)
     print(1 + 2 * 3)     # numbers: 7
     print(1 == 1)        # true (strict equality: 1 == "1" is false)
+    if (1 < 2) {         # braces required; else optional
+        print("yes")
+    }
     print("one"); print("two")   # ; is a statement terminator, same as newline
 
 Terminator rule (Go-style, as specified):
@@ -33,6 +36,8 @@ from enum import Enum, auto
 class TokenType(Enum):
     PRINT = auto()
     VAR = auto()
+    IF = auto()
+    ELSE = auto()
     TRUE = auto()
     FALSE = auto()
     IDENTIFIER = auto()
@@ -127,12 +132,13 @@ class Lexer:
             if ch == "\n":
                 line, col = self.line, self.col
                 self.advance()
-                # Suppress newline-terminators inside brackets so
+                # Suppress newline-terminators inside (...) and [...] so
                 #   print(
                 #     "hi"
                 #   )
-                # works naturally.
-                if not self.brackets and self.prev_can_end:
+                # works naturally. Inside {...} blocks newlines DO terminate,
+                # since blocks hold statements, not expressions.
+                if (not self.brackets or self.brackets[-1][0] == "{") and self.prev_can_end:
                     self.add(TokenType.TERMINATOR, "\\n", line, col)
                     self.prev_can_end = False
                 continue
@@ -252,6 +258,10 @@ class Lexer:
             self.add(TokenType.PRINT, word, line, col)
         elif word == "var":
             self.add(TokenType.VAR, word, line, col)
+        elif word == "if":
+            self.add(TokenType.IF, word, line, col)
+        elif word == "else":
+            self.add(TokenType.ELSE, word, line, col)
         elif word == "true":
             self.add(TokenType.TRUE, word, line, col)
         elif word == "false":
@@ -399,6 +409,20 @@ class AssignStmt:
     line: int
 
 
+@dataclass
+class Block:
+    stmts: list
+    line: int
+
+
+@dataclass
+class IfStmt:
+    cond: object
+    then: object  # Block or single statement
+    otherwise: object  # Block, single statement, IfStmt (else-if), or None
+    line: int
+
+
 class Parser:
     def __init__(self, tokens: list[Token]):
         self.tokens = tokens
@@ -423,24 +447,30 @@ class Parser:
 
     def parse(self) -> list:
         stmts: list = []
-        while self.peek().type != TokenType.EOF:
-            # skip blank / duplicate terminators
-            while self.peek().type == TokenType.TERMINATOR:
-                self.advance()
+        while True:
+            self.skip_terminators()
             if self.peek().type == TokenType.EOF:
                 break
             stmts.append(self.parse_statement())
-            # each statement must end with TERMINATOR or EOF
-            nxt = self.peek()
-            if nxt.type == TokenType.TERMINATOR:
-                self.advance()
-            elif nxt.type == TokenType.EOF:
-                break
-            else:
-                raise SarmaError(
-                    f"Expected end of statement (newline or ';') at {nxt.line}:{nxt.col}, got {nxt.type.name}"
-                )
+            self.finish_statement()
         return stmts
+
+    def skip_terminators(self):
+        while self.peek().type == TokenType.TERMINATOR:
+            self.advance()
+
+    def finish_statement(self):
+        # Each statement ends with TERMINATOR or EOF; a closing brace ends one too,
+        # so single-line blocks like `{ print("x") }` need no `;`.
+        nxt = self.peek()
+        if nxt.type == TokenType.TERMINATOR:
+            self.advance()
+        elif nxt.type in (TokenType.RBRACE, TokenType.EOF):
+            pass
+        else:
+            raise SarmaError(
+                f"Expected end of statement (newline or ';') at {nxt.line}:{nxt.col}, got {nxt.type.name}"
+            )
 
     def parse_statement(self):
         tok = self.peek()
@@ -448,12 +478,60 @@ class Parser:
             return self.parse_print()
         if tok.type == TokenType.VAR:
             return self.parse_var()
+        if tok.type == TokenType.IF:
+            return self.parse_if()
         if tok.type == TokenType.IDENTIFIER:
             return self.parse_assign()
         raise SarmaError(
             f"Unknown statement starting with {tok.type.name} ({tok.value!r}) at {tok.line}:{tok.col}. "
-            f"Expected print, var, or assignment."
+            f"Expected print, var, if, or assignment."
         )
+
+    def parse_if(self) -> IfStmt:
+        kw = self.expect(TokenType.IF)
+        self.expect(TokenType.LPAREN)
+        cond = self.parse_expr()
+        self.expect(TokenType.RPAREN)
+        # Newlines may surround the branch, so both K&R and Allman styles work,
+        # `else` may start on the line after the branch, and a bare
+        # `if (cond) print("x")` needs no braces.
+        self.skip_terminators()
+        then = self.parse_branch()
+        # Look for `else` past any newlines, but restore them if absent:
+        # they still separate this statement from the next one.
+        mark = self.i
+        self.skip_terminators()
+        otherwise = None
+        if self.peek().type == TokenType.ELSE:
+            self.advance()
+            self.skip_terminators()
+            if self.peek().type == TokenType.IF:
+                otherwise = self.parse_if()
+            else:
+                otherwise = self.parse_branch()
+        else:
+            self.i = mark
+        return IfStmt(cond=cond, then=then, otherwise=otherwise, line=kw.line)
+
+    def parse_branch(self):
+        # A branch is a braced block or a single bare statement.
+        # A nested `if` as a bare branch binds a following `else` to itself
+        # (dangling else goes to the nearest `if`).
+        if self.peek().type == TokenType.LBRACE:
+            return self.parse_block()
+        return self.parse_statement()
+
+    def parse_block(self) -> Block:
+        tok = self.expect(TokenType.LBRACE)
+        stmts: list = []
+        while True:
+            self.skip_terminators()
+            if self.peek().type == TokenType.RBRACE:
+                self.advance()
+                break
+            stmts.append(self.parse_statement())
+            self.finish_statement()
+        return Block(stmts=stmts, line=tok.line)
 
     def parse_var(self) -> VarStmt:
         kw = self.expect(TokenType.VAR)
@@ -757,20 +835,35 @@ def eval_expr(node, env: dict):
 
 def execute(stmts: list, out=print) -> None:
     """Run statements, calling out(line) for each print as it happens."""
-    env: dict = {}
+    exec_block(stmts, {}, out)
+
+
+def exec_block(stmts: list, env: dict, out) -> None:
     for s in stmts:
-        if isinstance(s, PrintStmt):
-            out(display(eval_expr(s.expr, env)))
-        elif isinstance(s, VarStmt):
-            if s.name in env:
-                raise SarmaError(f"Variable {s.name!r} already defined (line {s.line})")
-            env[s.name] = eval_expr(s.expr, env)
-        elif isinstance(s, AssignStmt):
-            if s.name not in env:
-                raise SarmaError(f"Undefined variable {s.name!r} at line {s.line} (declare with var first)")
-            env[s.name] = eval_expr(s.expr, env)
+        exec_stmt(s, env, out)
+
+
+def exec_stmt(s, env: dict, out) -> None:
+    if isinstance(s, PrintStmt):
+        out(display(eval_expr(s.expr, env)))
+    elif isinstance(s, VarStmt):
+        if s.name in env:
+            raise SarmaError(f"Variable {s.name!r} already defined (line {s.line})")
+        env[s.name] = eval_expr(s.expr, env)
+    elif isinstance(s, AssignStmt):
+        if s.name not in env:
+            raise SarmaError(f"Undefined variable {s.name!r} at line {s.line} (declare with var first)")
+        env[s.name] = eval_expr(s.expr, env)
+    elif isinstance(s, IfStmt):
+        branch = s.then if truthy(eval_expr(s.cond, env)) else s.otherwise
+        if branch is None:
+            return
+        if isinstance(branch, Block):
+            exec_block(branch.stmts, env, out)
         else:
-            raise SarmaError(f"Unknown statement {s!r}")
+            exec_stmt(branch, env, out)  # else-if chain
+    else:
+        raise SarmaError(f"Unknown statement {s!r}")
 
 
 def run_source(source: str) -> list:
