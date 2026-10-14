@@ -3,8 +3,8 @@
 strict comparisons).
 
 Usage:
-    python3 sarma.py <file.sarma>
-    python3 sarma.py examples/print.sarma
+    python3 python/sarma.py <file.sarma>
+    python3 python/sarma.py examples/print.sarma
 
 Syntax:
     var name = "world"
@@ -12,7 +12,7 @@ Syntax:
     print("hi " + name)
     print(1 + 2 * 3)     # numbers: 7
     print(1 == 1)        # true (strict equality: 1 == "1" is false)
-    if (1 < 2) {         # braces required; else optional
+    if (1 < 2) {         # else optional; if (c) print("yes") needs no braces
         print("yes")
     }
     print("one"); print("two")   # ; is a statement terminator, same as newline

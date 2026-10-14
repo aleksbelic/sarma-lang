@@ -1,0 +1,8 @@
+[package]
+name = "sarma"
+version = "0.7.0"
+edition = "2021"
+
+[[bin]]
+name = "sarma"
+path = "src/main.rs"

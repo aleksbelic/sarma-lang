@@ -5,6 +5,9 @@ Usage:
     python3 tests/run_tests.py            # run everything
     python3 tests/run_tests.py -v         # also show passing tests
     python3 tests/run_tests.py escapes    # only tests whose name contains "escapes"
+    python3 tests/run_tests.py --bin rust/target/debug/sarma
+                                          # file cases + CLI tests vs another
+                                          # binary (python-only tests skipped)
 
 Three kinds of tests:
 
@@ -24,17 +27,27 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "python"))
 
 import sarma  # noqa: E402
 from sarma import Lexer, SarmaError, TokenType, execute, run_and_capture, run_source  # noqa: E402
 
-SARMA_PY = os.path.join(ROOT, "sarma.py")
+SARMA_PY = os.path.join(ROOT, "python", "sarma.py")
+
+# Alternative interpreter binary (e.g. the Rust port). When set, file cases
+# and CLI tests run against it; python-only in-process tests are skipped.
+BIN = None
+
+
+def interp_cmd():
+    if BIN is None:
+        return [sys.executable, SARMA_PY]
+    return [BIN]
 
 
 def run_cli(*args):
     return subprocess.run(
-        [sys.executable, SARMA_PY, *args],
+        [*interp_cmd(), *args],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
     )
 
@@ -226,7 +239,7 @@ def test_cli_broken_pipe_is_quiet():
         path = os.path.join(d, "many.sarma")
         with open(path, "w", encoding="utf-8") as f:
             f.write(('print("%s")\n' % ("x" * 60)) * 20000)
-        p = subprocess.Popen([sys.executable, SARMA_PY, path],
+        p = subprocess.Popen([*interp_cmd(), path],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         first = p.stdout.readline()
         p.stdout.close()
@@ -250,6 +263,12 @@ def test_cli_long_concat_chain():
 # ----------------------------------------------------------------- runner
 
 def main(argv):
+    global BIN
+    argv = list(argv)
+    if "--bin" in argv:
+        i = argv.index("--bin")
+        BIN = argv[i + 1]
+        del argv[i:i + 2]
     verbose = "-v" in argv
     filters = [a for a in argv if not a.startswith("-")]
 
@@ -257,6 +276,7 @@ def main(argv):
         return not filters or any(f in name for f in filters)
 
     results = []  # (name, problems)
+    skipped = 0
 
     for rel in file_cases():
         if selected(rel):
@@ -264,6 +284,9 @@ def main(argv):
 
     for name, fn in TESTS:
         if selected(name):
+            if BIN is not None and not name.startswith("test_cli_"):
+                skipped += 1
+                continue
             try:
                 fn()
                 results.append((name, []))
@@ -284,6 +307,8 @@ def main(argv):
 
     total = len(results)
     print(f"\n{total - failed}/{total} passed" + (f", {failed} FAILED" if failed else ""))
+    if skipped:
+        print(f"{skipped} skipped (python-only, --bin active)")
     return 1 if failed else 0
 
 
